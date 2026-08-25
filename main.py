@@ -15,7 +15,9 @@ Visual style:
     time, and the vertical bar between them fills from top to bottom
     as that verse plays, so it doubles as a countdown of how much
     longer the verse will stay on screen.
-  - A horizontal "push" slide transition between every slide
+  - A horizontal "push" slide transition between every slide, eased
+    (slow-fast-slow) and blended with a cross-fade so it reads as a
+    gentle push+fade rather than a hard, jarring slide.
   - Background music that fades in, fades out, and loops (restarts)
     if it's shorter than the finished video
 
@@ -47,13 +49,13 @@ This version instead:
      tiny, this is nowhere near as expensive as re-compositing the
      whole frame the naive approach would do.
   3. Real full-canvas alpha work still only happens during the short
-     (~0.6s) push transitions between slides, where the verse text
-     itself is actually moving. The banner and watermark are pasted at
-     a fixed position during transitions too, so neither one slides —
-     only the verse text/progress-bar layer does, and each outgoing/
-     incoming slide's progress bar is drawn at its own correct fill
-     level for that moment (an outgoing verse finishing near 100%, an
-     incoming verse starting near 0%).
+     (~1.5s) push transitions between slides, where the verse text
+     itself is actually moving/fading. The banner and watermark are
+     pasted at a fixed position during transitions too, so neither one
+     slides or fades — only the verse text/progress-bar layer does,
+     and each outgoing/incoming slide's progress bar is drawn at its
+     own correct fill level for that moment (an outgoing verse
+     finishing near 100%, an incoming verse starting near 0%).
   4. Feeds MoviePy a lightweight custom VideoClip that just looks up
      (or, for transition frames, cheaply computes) the right frame for
      a given timestamp.
@@ -157,7 +159,7 @@ BANNER_TEXT = None
 
 # Set to None to skip these slides entirely — output will be verse slides only.
 TITLE_SLIDE_TEXT = None              # e.g. "Welcome to our video." or None to skip
-OUTRO_SLIDE_TEXT = "Thanks For Watching. Like & Share !!!"            # e.g. "Thanks For Watching." or None to skip
+OUTRO_SLIDE_TEXT = " 🙏 Thanks For Watching. Like & Share !!!"            # e.g. "Thanks For Watching." or None to skip
 
 # The watermark is drawn once onto a transparent overlay that sits on
 # top of every frame, so it stays fixed in place while slides push/
@@ -189,24 +191,45 @@ COVER_TIME = 0.15              # seconds into the cover slide to grab the still 
                                 # (kept just after 0 so a mid-transition frame isn't used)
 
 # The cover gets its OWN look, separate from the in-video banner/verse
-# style — a bold white-with-black-outline title near the top, plus a
-# tilted, semi-transparent coral banner underneath it (like a stamp).
-# This is drawn on top of the background ONLY for the cover slide /
-# cover.jpg; it never appears on the regular verse slides.
+# style — a bold white-with-black-outline title near the top, a
+# tilted, semi-transparent coral banner underneath it (like a stamp),
+# and (optionally) a second, straight blue banner below THAT showing
+# the translation/version name. This is drawn on top of the
+# background ONLY for the cover slide / cover.jpg; it never appears on
+# the regular verse slides.
 COVER_TITLE_TEXT = None              # e.g. "Genesis 1 vs 26-31"; None = auto-built from the slides used
-COVER_SUBTITLE_TEXT = f"God's Word  ({TRANSLATION_LABEL})"   # tilted coral banner text; None to skip the banner
+COVER_SUBTITLE_TEXT = f"God's Word "   # tilted coral banner text; None to skip the banner
 COVER_TITLE_FONT_SIZE = 104
-COVER_SUBTITLE_FONT_SIZE = 116
+COVER_SUBTITLE_FONT_SIZE = 166
 COVER_TITLE_STROKE_WIDTH = 7
 COVER_BANNER_COLOR = (224, 122, 63, 205)   # coral, semi-transparent (R, G, B, A)
 COVER_BANNER_TEXT_COLOR = "#1a1208"
 COVER_BANNER_ROTATION = -6                  # degrees, tilts it like a stamp
 
+# Second banner, drawn just below the coral "God's Word" banner, with
+# the Bible version/translation name on it (e.g. "NLT"). Set
+# COVER_VERSION_TEXT to a fixed string to override; leave as None to
+# auto-use TRANSLATION_LABEL. Set to "" (empty string) to skip this
+# banner entirely.
+COVER_VERSION_TEXT = None                    # None = auto-use TRANSLATION_LABEL
+COVER_VERSION_FONT_SIZE = 92
+COVER_VERSION_BANNER_COLOR = (36, 84, 176, 210)   # blue, semi-transparent (R, G, B, A)
+COVER_VERSION_BANNER_TEXT_COLOR = "#f5f7ff"
+COVER_VERSION_BANNER_ROTATION = 0            # straight, so it reads as a distinct label
+COVER_VERSION_BANNER_GAP = 24                # vertical gap below the coral banner
+
 WORDS_PER_SECOND = 2
 MIN_DURATION = 4
 MAX_DURATION = 40
 
-TRANSITION_DURATION = 1.5           # seconds; horizontal slide/push between slides
+TRANSITION_DURATION = 1.5           # seconds; horizontal push+fade between slides
+
+# The push transition's motion/opacity are run through an ease-in-out
+# curve (slow-fast-slow) instead of linear, and the outgoing/incoming
+# slides cross-fade on top of the push, so the cut between slides
+# feels like a gentle push+fade rather than a hard, snappy slide.
+TRANSITION_EASING = True            # False = old linear/no-fade push
+TRANSITION_CROSSFADE = True         # blend opacity of outgoing/incoming slides during the push
 
 FONT_SIZE = 58
 BANNER_FONT_SIZE = 56
@@ -321,6 +344,7 @@ fallback_font = load_font(FALLBACK_FONT_SIZE)
 watermark_font = load_font(28)
 cover_title_font = load_font(COVER_TITLE_FONT_SIZE)
 cover_subtitle_font = load_font(COVER_SUBTITLE_FONT_SIZE)
+cover_version_font = load_font(COVER_VERSION_FONT_SIZE)
 
 # --------------------------------------------------
 # LOAD BIBLE JSON AND EXTRACT VERSES
@@ -768,14 +792,16 @@ def create_plain_slide(text, filename):
 
 
 # --------------------------------------------------
-# COVER OVERLAY (bold outlined title + tilted coral banner)
+# COVER OVERLAY (bold outlined title + tilted coral banner + straight
+# blue version banner)
 # --------------------------------------------------
 # Used to build the opening cover slide of the video (when
 # COVER_AS_FIRST_SLIDE is True) and/or the standalone cover.jpg
 # thumbnail. It intentionally does NOT reuse draw_banner()/BANNER_FILL
 # etc. above, since the cover is meant to look like a punchy thumbnail
 # (outlined title text, no box; a tilted semi-transparent stamp-style
-# banner) rather than the in-video ribbon banner used on verse slides.
+# banner, plus a second straight banner underneath for the version
+# name) rather than the in-video ribbon banner used on verse slides.
 
 
 def cover_title_text_for_slides(slides):
@@ -819,7 +845,7 @@ def create_rotated_banner(text, font_obj, fill_rgba, text_color, rotation_deg,
     """Builds a small solid-color rectangle with centered text baked
     in, then rotates the whole thing (expanding the canvas so nothing
     gets clipped) so it can be pasted onto the cover like a tilted
-    stamp/ribbon."""
+    stamp/ribbon. Pass rotation_deg=0 for a plain, unrotated banner."""
     scratch = Image.new("RGBA", (10, 10), (0, 0, 0, 0))
     scratch_draw = ImageDraw.Draw(scratch)
     bbox = scratch_draw.textbbox((0, 0), text, font=font_obj)
@@ -837,17 +863,21 @@ def create_rotated_banner(text, font_obj, fill_rgba, text_color, rotation_deg,
     text_y = pad_y - bbox[1]
     banner_draw.text((text_x, text_y), text, font=font_obj, fill=text_color)
 
+    if not rotation_deg:
+        return banner
     return banner.rotate(rotation_deg, expand=True, resample=Image.BICUBIC)
 
 
-def create_cover_overlay(title_text, subtitle_text):
-    """Builds the cover overlay: an outlined title near the top plus
-    (optionally) a tilted, semi-transparent coral banner beneath it —
-    matching the reference thumbnail style. Returned as an RGBA image
-    the same size as the frame, transparent everywhere except the
-    title/banner content, so it can be used either as an actual video
-    slide's content layer (see COVER_AS_FIRST_SLIDE) or composited
-    onto a single grabbed frame for cover.jpg."""
+def create_cover_overlay(title_text, subtitle_text, version_text=None):
+    """Builds the cover overlay: an outlined title near the top, an
+    optional tilted, semi-transparent coral banner beneath it, and an
+    optional second, straight blue banner below THAT with the
+    translation/version name — matching the reference thumbnail style.
+    Returned as an RGBA image the same size as the frame, transparent
+    everywhere except the title/banner content, so it can be used
+    either as an actual video slide's content layer (see
+    COVER_AS_FIRST_SLIDE) or composited onto a single grabbed frame
+    for cover.jpg."""
     overlay = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
 
@@ -859,6 +889,7 @@ def create_cover_overlay(title_text, subtitle_text):
             y = draw_outlined_text_centered(draw, line, cover_title_font, WIDTH / 2, y)
             y += 14
 
+    subtitle_bottom = 640
     if subtitle_text:
         banner = create_rotated_banner(
             subtitle_text,
@@ -868,8 +899,21 @@ def create_cover_overlay(title_text, subtitle_text):
             COVER_BANNER_ROTATION,
         )
         bx = int((WIDTH - banner.width) / 2)
-        by = 640
+        by = 840
         overlay.alpha_composite(banner, (bx, by))
+        subtitle_bottom = by + banner.height
+
+    if version_text:
+        version_banner = create_rotated_banner(
+            version_text,
+            cover_version_font,
+            COVER_VERSION_BANNER_COLOR,
+            COVER_VERSION_BANNER_TEXT_COLOR,
+            COVER_VERSION_BANNER_ROTATION,
+        )
+        vbx = int((WIDTH - version_banner.width) / 2)
+        vby = subtitle_bottom + COVER_VERSION_BANNER_GAP
+        overlay.alpha_composite(version_banner, (vbx, vby))
 
     return overlay
 
@@ -896,9 +940,33 @@ def create_cover_overlay(title_text, subtitle_text):
 #      slides. During that window the banner and watermark stay
 #      pasted at a fixed offset (0, 0) and only the verse-text content
 #      (plus each slide's own progress bar, at its own offset and its
-#      own fill level) is pasted at a sliding x offset.
+#      own fill level) is pasted at a sliding x offset, eased and
+#      cross-faded so the motion is gentle rather than abrupt.
 #   4. Build a single lightweight VideoClip whose frame_function just
 #      looks up / cheaply computes the right frame for a timestamp.
+
+
+def _ease_in_out(p):
+    """Smoothstep easing: slow-fast-slow instead of a constant-speed
+    linear ramp, so the push transition eases into and out of motion
+    rather than snapping at a constant speed the whole time."""
+    p = max(0.0, min(1.0, p))
+    return p * p * (3.0 - 2.0 * p)
+
+
+def _with_alpha_factor(img, factor):
+    """Returns a copy of an RGBA image with its alpha channel scaled
+    by `factor` (0.0-1.0), used to cross-fade the outgoing/incoming
+    slide content during a push transition. Only ever called during
+    the short transition window, not on every frame, so the extra
+    numpy pass is cheap relative to the whole render."""
+    if factor >= 0.999:
+        return img
+    if factor <= 0.001:
+        return Image.new("RGBA", img.size, (0, 0, 0, 0))
+    arr = np.array(img)
+    arr[..., 3] = (arr[..., 3].astype(np.float32) * factor).astype(np.uint8)
+    return Image.fromarray(arr, "RGBA")
 
 
 def build_fast_video(background_img, content_images, banner_images,
@@ -947,8 +1015,9 @@ def build_fast_video(background_img, content_images, banner_images,
         return np.array(frame)
 
     def compose_transition(idx_out, idx_in, p, t_abs):
-        x_out = int(round(-WIDTH * p))
-        x_in = int(round(WIDTH * (1 - p)))
+        p_motion = _ease_in_out(p) if TRANSITION_EASING else p
+        x_out = int(round(-WIDTH * p_motion))
+        x_in = int(round(WIDTH * (1 - p_motion)))
         frame = background_img.copy()
 
         # Banner stays fixed at (0, 0) the whole transition — it does
@@ -959,8 +1028,15 @@ def build_fast_video(background_img, content_images, banner_images,
         if banner_img is not None:
             frame.paste(banner_img, (0, 0), banner_img)
 
-        frame.paste(content_images[idx_out], (x_out, 0), content_images[idx_out])
-        frame.paste(content_images[idx_in], (x_in, 0), content_images[idx_in])
+        content_out = content_images[idx_out]
+        content_in = content_images[idx_in]
+        if TRANSITION_CROSSFADE:
+            fade_p = _ease_in_out(p) if TRANSITION_EASING else p
+            content_out = _with_alpha_factor(content_out, 1.0 - fade_p)
+            content_in = _with_alpha_factor(content_in, fade_p)
+
+        frame.paste(content_out, (x_out, 0), content_out)
+        frame.paste(content_in, (x_in, 0), content_in)
 
         progress_out = (
             min(1.0, (t_abs - slide_start[idx_out]) / durations[idx_out])
@@ -1104,10 +1180,15 @@ def main():
     # (see COVER_AS_FIRST_SLIDE) so it plays at the very start instead
     # of only existing as a separate thumbnail file.
     cover_title = COVER_TITLE_TEXT or cover_title_text_for_slides(slides)
+    cover_version_text = (
+        COVER_VERSION_TEXT if COVER_VERSION_TEXT is not None else TRANSLATION_LABEL
+    )
     cover_overlay_img = None
     if GENERATE_COVER or COVER_AS_FIRST_SLIDE:
-        if cover_title or COVER_SUBTITLE_TEXT:
-            cover_overlay_img = create_cover_overlay(cover_title, COVER_SUBTITLE_TEXT)
+        if cover_title or COVER_SUBTITLE_TEXT or cover_version_text:
+            cover_overlay_img = create_cover_overlay(
+                cover_title, COVER_SUBTITLE_TEXT, cover_version_text
+            )
             cover_debug_path = os.path.join(SLIDES_DIR, "000_cover.png")
             cover_overlay_img.save(cover_debug_path)
 
