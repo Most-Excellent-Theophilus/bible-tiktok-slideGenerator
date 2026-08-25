@@ -183,7 +183,7 @@ GENERATE_COVER = True          # set False to skip generating a cover image
 # way (grabbed from that same opening slide) so you also have a still
 # image to pick as the TikTok thumbnail.
 COVER_AS_FIRST_SLIDE = True
-COVER_SLIDE_DURATION = 0.1     # seconds the cover slide is shown at the start of the video
+COVER_SLIDE_DURATION = 0.02   # seconds the cover slide is shown at the start of the video
 
 COVER_TIME = 0.15              # seconds into the cover slide to grab the still cover.jpg frame from
                                 # (kept just after 0 so a mid-transition frame isn't used)
@@ -194,9 +194,9 @@ COVER_TIME = 0.15              # seconds into the cover slide to grab the still 
 # This is drawn on top of the background ONLY for the cover slide /
 # cover.jpg; it never appears on the regular verse slides.
 COVER_TITLE_TEXT = None              # e.g. "Genesis 1 vs 26-31"; None = auto-built from the slides used
-COVER_SUBTITLE_TEXT = "God's Word"   # tilted coral banner text; None to skip the banner
+COVER_SUBTITLE_TEXT = f"God's Word  ({TRANSLATION_LABEL})"   # tilted coral banner text; None to skip the banner
 COVER_TITLE_FONT_SIZE = 104
-COVER_SUBTITLE_FONT_SIZE = 166
+COVER_SUBTITLE_FONT_SIZE = 116
 COVER_TITLE_STROKE_WIDTH = 7
 COVER_BANNER_COLOR = (224, 122, 63, 205)   # coral, semi-transparent (R, G, B, A)
 COVER_BANNER_TEXT_COLOR = "#1a1208"
@@ -206,7 +206,7 @@ WORDS_PER_SECOND = 2
 MIN_DURATION = 4
 MAX_DURATION = 40
 
-TRANSITION_DURATION = 0.6           # seconds; horizontal slide/push between slides
+TRANSITION_DURATION = 1.5           # seconds; horizontal slide/push between slides
 
 FONT_SIZE = 58
 BANNER_FONT_SIZE = 56
@@ -223,10 +223,10 @@ HIGHLIGHT_TEXT_COLOR = "#111111"
 # The left-hand "bracket" is a progress bar: BRACKET_COLOR is the
 # fully-filled (already-elapsed) color, BRACKET_TRACK_ALPHA controls
 # how faint the not-yet-elapsed remainder of the bar looks.
-BRACKET_COLOR = "#FFD54A"
+BRACKET_COLOR = "#CCCCCCC7"
 BRACKET_TRACK_ALPHA = 70             # 0-255, opacity of the unfilled portion of the bar
-BRACKET_THICKNESS = 9
-BRACKET_TICK = 34
+BRACKET_THICKNESS = 15
+BRACKET_TICK = 0
 BRACKET_GAP = 34                     # space between bracket and text block
 
 BANNER_FILL = "#F2E8D5"
