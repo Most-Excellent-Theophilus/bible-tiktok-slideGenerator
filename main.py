@@ -75,6 +75,16 @@ command line:
     python main.py book:Genesis,chapter:1,verse_start:1,verse_end:10
     python main.py book:Genesis,chapter_start:1,chapter_end:5
 
+    # One combined video spanning chapters 1-5:
+    python main.py book:Genesis,chapter_start:1,chapter_end:5
+
+    # Five INDEPENDENT videos, one per chapter, back to back:
+    python main.py book:Genesis,chapter_start:1,chapter_end:5,split_chapters:true
+
+    # Same, but delete each chapter's intermediate slide/output
+    # material as soon as that chapter's video finishes rendering:
+    python main.py book:Genesis,chapter_start:1,chapter_end:5,split_chapters:true,cleanup:true
+
 - "book" can be a book name ("Genesis") or a book number ("1"), matched
   against the JSON's bname / bnumber.
 - If chapter is given but no verse_start/verse_end, the ENTIRE chapter
@@ -84,8 +94,19 @@ command line:
   are ignored in this mode since they wouldn't make sense across
   multiple chapters). The banner reference at the top of each verse
   slide updates automatically as the chapter changes.
+- If chapter_start/chapter_end are given together with
+  split_chapters:true, instead of one combined video the script
+  produces one INDEPENDENT video per chapter in that range (each with
+  its own cover, banner, and output folder), rendered one after
+  another in the same run.
+- If cleanup:true, once a chapter's video (and cover.jpg, if kept) has
+  finished rendering, that chapter's working folder under output/ —
+  the per-slide PNGs, background/overlay PNGs, and cover.jpg — is
+  deleted, leaving only the final .mp4 under vids/ (and, if
+  KEEP_COVER_ON_CLEANUP is True, a copy of cover.jpg saved alongside
+  it). This never touches the rendered .mp4 files themselves.
 - Recognized keys: book, chapter, chapter_start, chapter_end,
-  verse_start, verse_end, translation
+  verse_start, verse_end, translation, split_chapters, cleanup
 
 Expected JSON shape:
 {
@@ -113,6 +134,7 @@ import bisect
 import json
 import os
 import re
+import shutil
 import sys
 import time
 
@@ -145,11 +167,33 @@ VERSE_END = 25                       # or None for the whole chapter
 # --- Multi-chapter mode ---
 # Set both to generate one video spanning multiple whole chapters of
 # BOOK_NAME (e.g. CHAPTER_START="1", CHAPTER_END="5" does chapters 1-5
-# back to back). Leave both as None to use CHAPTER_NUMBER above instead.
-# In this mode VERSE_START/VERSE_END are ignored — every chapter in the
-# range is used in full.
+# back to back in a SINGLE video). Leave both as None to use
+# CHAPTER_NUMBER above instead. In this mode VERSE_START/VERSE_END are
+# ignored — every chapter in the range is used in full.
 CHAPTER_START = None
 CHAPTER_END = None
+
+# When True (and CHAPTER_START/CHAPTER_END are both set), instead of
+# combining every chapter in the range into ONE video, this produces
+# one INDEPENDENT video per chapter — e.g. CHAPTER_START="1",
+# CHAPTER_END="50" with this True renders 50 separate .mp4 files, one
+# per chapter, back to back in the same run. Each chapter gets its own
+# output/ working folder, cover.jpg, banner, and slides.
+SPLIT_CHAPTERS_INTO_SEPARATE_VIDEOS = False
+
+# When True, once a chapter's video (and cover.jpg, if generated) has
+# finished rendering, that chapter's intermediate working material —
+# the output/book-.../ folder containing the per-slide PNGs,
+# background.png, overlay.png, and cover.jpg — is deleted. Only the
+# rendered .mp4 under vids/ (and, optionally, a copy of cover.jpg
+# saved alongside it — see KEEP_COVER_ON_CLEANUP) survives. This never
+# deletes anything under vids/.
+CLEANUP_OUTPUT_AFTER_RENDER = False
+
+# If True and CLEANUP_OUTPUT_AFTER_RENDER is True, cover.jpg is copied
+# out to vids/<video_name>_cover.jpg BEFORE its output/ folder is
+# deleted, so you still get a thumbnail image even with cleanup on.
+KEEP_COVER_ON_CLEANUP = True
 
 # Auto-built per chapter as "GENESIS 1:1-31 (NLT)" — override with your
 # own fixed string if you want the same banner text on every slide
@@ -159,7 +203,7 @@ BANNER_TEXT = None
 
 # Set to None to skip these slides entirely — output will be verse slides only.
 TITLE_SLIDE_TEXT = None              # e.g. "Welcome to our video." or None to skip
-OUTRO_SLIDE_TEXT = " 🙏 Thanks For Watching. Like & Share !!!"            # e.g. "Thanks For Watching." or None to skip
+OUTRO_SLIDE_TEXT = "Thanks For Watching. Like & Share !!!"            # e.g. "Thanks For Watching." or None to skip
 
 # The watermark is drawn once onto a transparent overlay that sits on
 # top of every frame, so it stays fixed in place while slides push/
@@ -279,6 +323,10 @@ def parse_cli_args(argv):
     return parsed
 
 
+def _parse_bool(value):
+    return str(value).strip().lower() in ("1", "true", "yes", "y", "on")
+
+
 _cli_args = parse_cli_args(sys.argv)
 
 if "book" in _cli_args:
@@ -304,6 +352,12 @@ if "verse_end" in _cli_args:
 
 if "translation" in _cli_args:
     TRANSLATION_LABEL = _cli_args["translation"]
+
+if "split_chapters" in _cli_args:
+    SPLIT_CHAPTERS_INTO_SEPARATE_VIDEOS = _parse_bool(_cli_args["split_chapters"])
+
+if "cleanup" in _cli_args:
+    CLEANUP_OUTPUT_AFTER_RENDER = _parse_bool(_cli_args["cleanup"])
 
 MULTI_CHAPTER_MODE = CHAPTER_START is not None and CHAPTER_END is not None
 
@@ -381,6 +435,10 @@ def get_chapter(book, chapter_number):
     )
 
 
+def count_chapters(book):
+    return len(book["CHAPTER"])
+
+
 def extract_verses(chapter, verse_start=None, verse_end=None):
     verses = []
     for vers in chapter["VERS"]:
@@ -400,7 +458,7 @@ def chapter_banner_text(book, chapter, verses):
         return BANNER_TEXT
     v_first = verses[0][0]
     v_last = verses[-1][0]
-    verse_range = v_first if v_first == v_last else f"{v_first}-{v_last}"
+    verse_range = v_first if v_first == v_last else f"{v_first} to {v_last}"
     return (
         f"{book['bname'].upper()} {chapter['cnumber']} vs {verse_range} "
         f"({TRANSLATION_LABEL})"
@@ -416,8 +474,9 @@ def build_slides_from_config():
 
     As a side effect, updates the module-level BANNER_TEXT global to
     the banner text of the last chapter processed, so callers (e.g.
-    main(), for naming the output video file) can read it back after
-    this function returns without having to re-derive it themselves.
+    generate_and_render(), for naming the output video file) can read
+    it back after this function returns without having to re-derive
+    it themselves.
     """
     global BANNER_TEXT
 
@@ -1126,11 +1185,45 @@ def video_filename_from_banner():
 
 
 # --------------------------------------------------
-# MAIN
+# CLEANUP
 # --------------------------------------------------
 
 
-def main():
+def cleanup_output_dir(output_dir, video_path):
+    """Deletes the intermediate working directory for one video (the
+    per-slide PNGs, background.png, overlay.png, and cover.jpg under
+    output_dir) once that video has finished rendering. Only ever
+    touches output_dir — never the rendered .mp4 under vids/.
+
+    If KEEP_COVER_ON_CLEANUP is True and a cover.jpg exists, it's
+    copied out next to the final video first (as
+    "<video_name>_cover.jpg") so you still get a thumbnail even though
+    the working folder is being removed."""
+    cover_src = os.path.join(output_dir, "cover.jpg")
+    if KEEP_COVER_ON_CLEANUP and video_path and os.path.exists(cover_src):
+        cover_dest = os.path.splitext(video_path)[0] + "_cover.jpg"
+        try:
+            shutil.copy2(cover_src, cover_dest)
+            print(f"Saved cover photo alongside video: {cover_dest}")
+        except OSError as e:
+            print(f"Warning: could not copy cover photo before cleanup: {e}")
+
+    if os.path.exists(output_dir):
+        shutil.rmtree(output_dir)
+        print(f"Cleaned up intermediate output: {output_dir}")
+
+
+# --------------------------------------------------
+# CORE PIPELINE (slide build -> frame precompute -> ffmpeg render)
+# --------------------------------------------------
+# Runs entirely off the current module-level config globals
+# (BOOK_NAME, CHAPTER_NUMBER, CHAPTER_START/END, VERSE_START/END,
+# MULTI_CHAPTER_MODE, OUTPUT_DIR, SLIDES_DIR, COVER_PATH, ...), so a
+# caller doing several runs in a row (see main()'s split-chapter mode)
+# just needs to update those globals between calls.
+
+
+def generate_and_render():
     os.makedirs(SLIDES_DIR, exist_ok=True)
 
     t0 = time.time()
@@ -1242,6 +1335,7 @@ def main():
     t2 = time.time()
 
     video_path = os.path.join('vids', video_filename_from_banner())
+    os.makedirs('vids', exist_ok=True)
     video.write_videofile(
         video_path,
         fps=FPS,
@@ -1260,6 +1354,89 @@ def main():
     print(f"Screenshots: {SLIDES_DIR}")
     if GENERATE_COVER:
         print(f"Cover photo: {COVER_PATH}")
+
+    return video_path
+
+
+# --------------------------------------------------
+# MAIN
+# --------------------------------------------------
+
+
+def _set_output_paths_for_current_chapter():
+    """Recomputes OUTPUT_DIR/SLIDES_DIR/COVER_PATH from the current
+    BOOK_NAME/CHAPTER_NUMBER globals. Called once up front, and again
+    before each chapter in split mode since BOOK_NAME/CHAPTER_NUMBER
+    change between iterations."""
+    global OUTPUT_DIR, SLIDES_DIR, COVER_PATH
+    OUTPUT_DIR = f"output/book-{BOOK_NAME}-{CHAPTER_NUMBER}"
+    SLIDES_DIR = os.path.join(OUTPUT_DIR, "slides")
+    COVER_PATH = os.path.join(OUTPUT_DIR, "cover.jpg")
+
+
+def main():
+    global CHAPTER_NUMBER, CHAPTER_START, CHAPTER_END
+    global VERSE_START, VERSE_END, MULTI_CHAPTER_MODE, BANNER_TEXT
+
+    if SPLIT_CHAPTERS_INTO_SEPARATE_VIDEOS and CHAPTER_START is not None and CHAPTER_END is not None:
+        start = int(CHAPTER_START)
+        end = int(CHAPTER_END)
+        if end < start:
+            start, end = end, start
+        chapter_range = list(range(start, end + 1))
+
+        print(f"Split mode: generating {len(chapter_range)} independent videos "
+              f"for {BOOK_NAME} chapters {start}-{end}"
+              f"{' (cleanup after each)' if CLEANUP_OUTPUT_AFTER_RENDER else ''}")
+
+        results = []
+        for n, cnum in enumerate(chapter_range, start=1):
+            print(f"\n=== Chapter {cnum} ({n}/{len(chapter_range)}) ===")
+
+            # Reset to single-chapter mode for this iteration — whole
+            # chapter, no verse range, no multi-chapter combining.
+            CHAPTER_NUMBER = str(cnum)
+            CHAPTER_START = None
+            CHAPTER_END = None
+            VERSE_START = None
+            VERSE_END = None
+            MULTI_CHAPTER_MODE = False
+            BANNER_TEXT = None
+
+            _set_output_paths_for_current_chapter()
+
+            try:
+                video_path = generate_and_render()
+            except ValueError as e:
+                # e.g. chapter doesn't exist in this book — skip it
+                # and keep going with the rest of the range.
+                print(f"Skipping chapter {cnum}: {e}")
+                continue
+
+            if CLEANUP_OUTPUT_AFTER_RENDER:
+                cleanup_output_dir(OUTPUT_DIR, video_path)
+
+            results.append(video_path)
+
+            # Restore the range globals for the next iteration's split check.
+            CHAPTER_START = str(start)
+            CHAPTER_END = str(end)
+
+        print(f"\nAll done — {len(results)} video(s) generated:")
+        for path in results:
+            print(f"  {path}")
+        return
+
+    # --- Single run (existing behavior): one combined video, either
+    # one chapter or (if CHAPTER_START/CHAPTER_END are set without
+    # split mode) several chapters spanned together. ---
+    MULTI_CHAPTER_MODE = CHAPTER_START is not None and CHAPTER_END is not None
+    _set_output_paths_for_current_chapter()
+
+    video_path = generate_and_render()
+
+    if CLEANUP_OUTPUT_AFTER_RENDER:
+        cleanup_output_dir(OUTPUT_DIR, video_path)
 
 
 if __name__ == "__main__":
